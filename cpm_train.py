@@ -1,6 +1,7 @@
 import argparse
 import os
 import time
+from torch.cuda.amp import autocast, GradScaler
 
 from torch.utils.data import DataLoader
 import torch.optim
@@ -29,7 +30,7 @@ parser.add_argument('--epochs', default=900, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=36, type=int,
+parser.add_argument('-b', '--batch-size', default=8, type=int,
                     metavar='N', help='mini-batch size (default: 36)')
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate')
@@ -64,6 +65,7 @@ args.cuda = (args.cuda and torch.cuda.is_available())
 image_w = 368
 image_h = 368
 
+scaler = GradScaler("cuda")
 
 def train():
     train_data = cpm_data.LSPDataset(args.lsp_root,
@@ -103,33 +105,41 @@ def train():
         adjust_learning_rate(optimizer, epoch, args.lr, params,
                              args.lr_decay_rate, args.lr_epoch_per_decay)
         for batch_idx, sample in enumerate(train_loader):
-
             image = Variable(sample['image'].cuda() if args.cuda else sample['image'])
             gt_map = Variable(sample['gt_map'].cuda() if args.cuda else sample['gt_map'])
             center_map = Variable(sample['center_map'].cuda() if args.cuda else sample['center_map'])
             weight = Variable(sample['weight'].cuda() if args.cuda else sample['weight'])
+
             optimizer.zero_grad()
-            pred_6 = model(image, center_map)
-            loss_log = cpm_model.mse_loss(pred_6, gt_map, weight)
-            loss = cpm_model.mse_loss(pred_6, gt_map, weight, weighted_loss=args.weighted_loss)
-            loss.backward()
-            optimizer.step()
+
+            # Utilisation de `autocast` pour activer AMP
+            with autocast():
+                pred_6 = model(image, center_map)
+                loss_log = cpm_model.mse_loss(pred_6, gt_map, weight)
+                loss = cpm_model.mse_loss(pred_6, gt_map, weight, weighted_loss=args.weighted_loss)
+
+            # Backward avec AMP
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
             count += image.data.shape[0]
             global_step += 1
+
             if global_step % args.print_freq == 0:
                 try:
                     time_inter = time.time() - end_time
                     count_inter = count - last_count
                     print_log(global_step, epoch, count, count_inter,
-                              num_alldata, loss_log, time_inter)
+                            num_alldata, loss_log, time_inter)
                     for name, param in model.named_parameters():
                         writer.add_histogram(name, param.clone().cpu().data.numpy(), global_step)
                     grid_image = make_grid(tools.keypoint_painter(image[:2], pred_6[:2],
-                                                                  image_h, image_w), 3)
+                                                                image_h, image_w), 3)
                     writer.add_image('Predicted image', grid_image, global_step)
                     grid_image = make_grid(tools.keypoint_painter(image[:2], gt_map[:2],
-                                                                  image_h, image_w, phase_gt=True,
-                                                                  center_map=center_map), 6)
+                                                                image_h, image_w, phase_gt=True,
+                                                                center_map=center_map), 6)
                     writer.add_image('Groundtruth image', grid_image, global_step)
                     writer.add_scalar('MSELoss', loss_log.data[0], global_step=global_step)
                     writer.add_scalar('Weighted MSELoss', loss.data[0], global_step=global_step)
@@ -138,10 +148,12 @@ def train():
                 except NameError:
                     end_time = time.time()
                     last_count = count
+
             if (global_step % args.save_freq == 0 or global_step == 1) and args.cuda:
                 save_ckpt(model, optimizer, global_step, batch_idx, count, args.batch_size,
-                          num_alldata, args.weighted_loss, args.weighted_bandwidth)
+                        num_alldata, args.weighted_loss, args.weighted_bandwidth)
                 pass
+
     print("Training completed ")
 
 
