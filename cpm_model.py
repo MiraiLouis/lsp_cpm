@@ -209,8 +209,10 @@ class CPM(nn.Module):
                             Mconv5_stage4_map, Mconv5_stage5_map, Mconv5_stage6_map], dim=1)
 
 
-def mse_loss(pred_6, target, weight=None, weighted_loss=False, size_average=True):
+def mse_loss(pred_6, target, weight=None, weighted_loss=False, size_average=False):
     mask = (weight != 0).float()
+    if torch.sum(mask) == 0:
+        print("Avertissement : Le masque est entièrement nul. La perte pourrait ne pas être significative.")
     diff = pred_6 - target.unsqueeze(1)
     shape = diff.data.shape
     d2 = (diff ** 2).view(shape[0], shape[1], shape[2], -1).mean(-1)

@@ -26,7 +26,7 @@ class LSPDataset(Dataset):
         self.map_w = 45
         self.guassian_sigma = 21
         self.num_keypoints = 14
-        self.num_train = 10000
+        self.num_train = 400
         global lms, imagefiles, weight
         if lms is None or imagefiles is None or weight is None:
             # Charger les annotations et les images du dataset LSPet uniquement
@@ -209,3 +209,34 @@ class Scale(object):
         image = skimage.transform.resize(image, (self.height, self.width), preserve_range=True)
         return {'image': image, 'gt_map': sample['gt_map'],
                 'center_map': sample['center_map'], 'weight': sample['weight']}
+
+import numpy as np
+import skimage.transform
+import torch
+
+class ScaleImageOnly(object):
+    """
+    Redimensionne uniquement l'image.
+    """
+    def __init__(self, height, width):
+        self.height = height
+        self.width = width
+
+    def __call__(self, image):
+        # image peut être un np.array ou un objet PIL
+        image = np.array(image)
+        image = skimage.transform.resize(image, (self.height, self.width),
+                                         preserve_range=True)
+        return image.astype(np.float32)
+
+
+class ToTensorImageOnly(object):
+    """
+    Convertit l'image (H, W, C) en Tensor (C, H, W).
+    """
+    def __call__(self, image):
+        if not isinstance(image, np.ndarray):
+            image = np.array(image, dtype=np.float32)
+        # Permute HWC -> CHW
+        image = image.transpose((2, 0, 1))
+        return torch.from_numpy(image).float()
